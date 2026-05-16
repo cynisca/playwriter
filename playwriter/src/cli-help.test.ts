@@ -38,4 +38,26 @@ describe('playwriter cli help', () => {
     expect(stdout).toContain('--replace')
     expect(stderr).toBe('')
   }, 30000)
+
+  test('unknown command exits with code 1', async () => {
+    try {
+      await runCli(['run'])
+      expect.unreachable('should have thrown')
+    } catch (error: any) {
+      expect(error.code).toBe(1)
+      expect(error.stderr).toContain('Unknown command: run')
+      expect(error.stderr).toContain('playwriter --help')
+    }
+  }, 30000)
+
+  test('unknown subcommand exits with code 1', async () => {
+    try {
+      await runCli(['session', 'nonexistent'])
+      expect.unreachable('should have thrown')
+    } catch (error: any) {
+      expect(error.code).toBe(1)
+      expect(error.stdout).toContain('Unknown command: session nonexistent')
+      expect(error.stdout).toContain('session new')
+    }
+  }, 30000)
 })

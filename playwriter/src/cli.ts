@@ -105,12 +105,33 @@ cli
   .option('--token <token>', 'Authentication token (or use PLAYWRITER_TOKEN env var)')
   .option('-s, --session <name>', 'Session ID (required for -e, get one with `playwriter session new`)')
   .option('-e, --eval <code>', 'Execute JavaScript code and exit, read https://playwriter.dev/SKILL.md for usage')
+  .option('-f, --file <path>', 'Execute JavaScript from a file and exit')
   .option('--timeout [ms]', z.number().default(10000).describe('Execution timeout in milliseconds'))
   .action(async (options) => {
-    // If -e flag is provided, execute code via relay server
-    if (options.eval) {
+    if (options.eval && options.file) {
+      console.error('Error: -e and -f cannot be used together.')
+      process.exit(1)
+    }
+
+    // If -e or -f flag is provided, execute code via relay server
+    const code = (() => {
+      if (options.eval) {
+        return options.eval
+      }
+      if (options.file) {
+        const filePath = path.resolve(options.file)
+        if (!fs.existsSync(filePath)) {
+          console.error(`Error: File not found: ${filePath}`)
+          process.exit(1)
+        }
+        return fs.readFileSync(filePath, 'utf-8')
+      }
+      return null
+    })()
+
+    if (code) {
       await executeCode({
-        code: options.eval,
+        code,
         timeout: options.timeout || 10000,
         sessionId: options.session,
         host: options.host,
@@ -958,6 +979,7 @@ cli.command('skill', 'Print the full playwriter usage instructions').action(() =
 })
 
 cli.help()
+cli.completions()
 cli.version(VERSION)
 
-cli.parse()
+await cli.parse()
