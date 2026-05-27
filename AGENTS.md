@@ -85,6 +85,35 @@ after EVERY change made inside extension/ folder you MUST bump the manifest.json
 
 Do not manually edit CHANGELOG.md files for extension changes. If the extension change also affects a public package release note, add a changeset for that public package instead.
 
+## github releases
+
+after publishing the CLI (`playwriter` npm package), always create GitHub releases for both the CLI and the extension (if extension code changed).
+
+**CLI release:**
+
+```bash
+# after changesets versioned and published the playwriter package
+VERSION=$(node -p "require('./playwriter/package.json').version")
+gh release create "playwriter@$VERSION" --title "playwriter@$VERSION" --latest --notes "$(cat <<'EOF'
+paste changelog entries here
+EOF
+)"
+```
+
+**extension release** (only if extension/ changed since last extension release):
+
+```bash
+# build the extension dist for release
+cd extension && PRODUCTION=true PLAYWRITER_EXTENSION_DIST=dist-release pnpm build && cd ..
+rm -f extension.zip && cd extension && zip -r ../extension.zip dist-release && cd ..
+
+# create the release, uploading extension.zip as an asset
+VERSION=$(node -p "require('./extension/manifest.json').version")
+gh release create "extension@$VERSION" extension.zip --title "Extension $VERSION" --latest=false --notes 'Download extension.zip, unzip it, then load as unpacked extension in chrome://extensions with developer mode enabled.'
+```
+
+use `--latest=false` for extension releases so they don't override the CLI release as the "Latest" GitHub release. the CLI release should always be the latest one.
+
 ### testing
 
 ```bash
