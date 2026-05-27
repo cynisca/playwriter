@@ -109,8 +109,13 @@ rm -f extension.zip && cd extension && zip -r ../extension.zip dist-release && c
 
 # create the release, uploading extension.zip as an asset
 VERSION=$(node -p "require('./extension/manifest.json').version")
-gh release create "extension@$VERSION" extension.zip --title "Extension $VERSION" --latest=false --notes 'Download extension.zip, unzip it, then load as unpacked extension in chrome://extensions with developer mode enabled.'
+gh release create "extension@$VERSION" extension.zip --title "Extension $VERSION" --latest=false --notes "$(cat <<'EOF'
+paste changelog entries here
+EOF
+)"
 ```
+
+read `extension/CHANGELOG.md` entries since the last extension GitHub release, merge them into a numbered list following the same changepub format (user-facing outcomes, sorted by relevance, no internal chores).
 
 use `--latest=false` for extension releases so they don't override the CLI release as the "Latest" GitHub release. the CLI release should always be the latest one.
 
