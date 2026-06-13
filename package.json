@@ -28,5 +28,7 @@
   "dependencies": {
     "mcp-extension": "workspace:^"
   },
-  "pnpm": {}
+  "pnpm": {
+    "onlyBuiltDependencies": ["workerd"]
+  }
 }
