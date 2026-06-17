@@ -597,8 +597,6 @@ console.log(cookies)
 
 MUST use this for page-scoped cookies in extension mode. `Storage.getCookies` is a root-session command and will fail in playwriter.
 
-**NEVER use `Network.clearBrowserCookies` or `Network.clearBrowserCache`** — these CDP commands are **profile-wide destructive operations** that wipe ALL cookies/cache across every domain in the user's Chrome profile. They will log the user out of Gmail, GitHub, and every authenticated session. Playwriter blocks these commands and throws an error if you try.
-
 **Clear cookies for a specific domain** — use `Network.getCookies` to fetch cookies scoped to URLs, then delete them individually with `Network.deleteCookies`:
 
 ```js
