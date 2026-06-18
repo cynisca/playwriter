@@ -1,6 +1,7 @@
 ---
 title: Playwriter
 description: Control your real Chrome browser with Playwright from an agent, CLI, or MCP server.
+icon: lucide:home
 rendering: static
 prompt: |
   read #holocron . migrate website to be a holocron docs website. using a mdx
@@ -20,8 +21,12 @@ import { HeroSection } from './components/hero-section.tsx'
 A Chrome extension and CLI that let your agents control **your actual browser** with
 logins, extensions, and cookies already there. No headless instance, no bot detection, no extra memory.
 
+<Aside>
+<Tip>
+If Playwriter is useful to you, [star it on GitHub](https://github.com/remorses/playwriter) to help others find it.
+</Tip>
+</Aside>
 
-  
 <Image
   src='/screenshot@2x.png'
   alt='Playwriter controlling Chrome with accessibility labels overlay'
@@ -29,7 +34,6 @@ logins, extensions, and cookies already there. No headless instance, no bot dete
   height={800}
 
 />
-  
 
 
 Other browser MCPs either **spawn a fresh Chrome** or give agents a fixed set of tools. New Chrome
@@ -43,12 +47,6 @@ tool definitions. And it runs in your existing browser, so **nothing extra gets 
 ## Getting started
 
 **Four steps** and your agent is browsing.
-
-<Aside>
-<Note>
-**Requirements:** Chrome or Chromium installed, Node.js 18+, and a Playwriter-compatible agent (OpenCode, Cursor, Claude Code, etc).
-</Note>
-</Aside>
 
 ### Install the extension
 
@@ -84,6 +82,12 @@ playwriter -e "page.locator('aria-ref=e5').click()"
 ```
 
 ## How it works
+
+<Aside>
+<Note>
+**Requirements:** Chrome or Chromium installed, Node.js 18+, and a Playwriter-compatible agent (OpenCode, Cursor, Claude Code, etc).
+</Note>
+</Aside>
 
 Click the extension icon on a tab. It attaches via `chrome.debugger` and opens a
 WebSocket to a local relay. Your agent (CLI, MCP, or a Playwright script) connects to the same relay.
