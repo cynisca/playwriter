@@ -286,6 +286,16 @@ export class PlaywrightExecutor {
   private page: Page | null = null
   private browser: Browser | null = null
   private context: BrowserContext | null = null
+  // The tab THIS session owns. In the default (own-tab) mode each session
+  // lazily creates and owns a dedicated tab so concurrent sessions on the same
+  // Chrome profile never clobber each other's page — shared cookies (one
+  // context), isolated navigation (separate tabs). Tracked by Page reference
+  // (stable for the tab's life within the relay daemon); we avoid CDP targetId
+  // because Target.getTargetInfo isn't reliably available over the extension
+  // relay.
+  private ownedPage: Page | null = null
+  // Wall-clock of the last execute(), for the idle reaper.
+  private lastActivityAt = Date.now()
 
   private userState: Record<string, any> = {}
   private browserLogs: Map<Page, string[]> = new Map()
@@ -326,10 +336,13 @@ export class PlaywrightExecutor {
     this.sessionMetadata = options.sessionMetadata || { extensionId: null, browser: null, profile: null }
     this.sessionCwd = options.cwd ? path.resolve(options.cwd) : null
     // ScopedFS expects an array of allowed directories. If cwd is provided, use it; otherwise use defaults.
-    this.scopedFs = new ScopedFS(
-      this.sessionCwd ? [this.sessionCwd, '/tmp', os.tmpdir()] : undefined,
-      this.sessionCwd || undefined,
-    )
+    // Single-user / high-trust: allow the whole home tree (plus /tmp) so
+    // downloads and file ops inside -e just work, instead of sandboxing to the
+    // session cwd. Set PLAYWRITER_SCOPED_FS=cwd to restore cwd-only sandboxing.
+    this.scopedFs =
+      process.env.PLAYWRITER_SCOPED_FS === 'cwd' && this.sessionCwd
+        ? new ScopedFS([this.sessionCwd, '/tmp', os.tmpdir()], this.sessionCwd)
+        : new ScopedFS([os.homedir(), '/tmp', os.tmpdir()], this.sessionCwd || os.homedir())
     this.sandboxedRequire = this.createSandboxedRequire(require)
     this.ghostCursorController = new GhostCursorController({
       logger: {
@@ -771,20 +784,40 @@ export class PlaywrightExecutor {
       if (contexts.length > 0) {
         const context = contexts[0]
         this.context = context
-        const pages = context.pages().filter((p) => !p.isClosed())
-        if (pages.length > 0) {
-          const page = pages[0]
-          await page.waitForLoadState('domcontentloaded', { timeout }).catch(() => {})
-          this.page = page
-          return page
-        }
-        const page = await this.ensurePageForContext({ context, timeout })
+        const page = await this.acquireOwnPage({ context, timeout })
         this.page = page
         return page
       }
     }
 
     throw new Error(NO_PAGES_AVAILABLE_ERROR)
+  }
+
+  /**
+   * Acquire THIS session's page. Default (own-tab) mode: reuse the tab this
+   * session already owns (by Page reference) if it's still open, else create a
+   * fresh one — so two concurrent sessions never share a tab. Set
+   * PLAYWRITER_ATTACH_ACTIVE=true to revert to the legacy "use the first
+   * existing tab" behavior (useful for driving the tab the human is on).
+   */
+  private async acquireOwnPage(options: { context: BrowserContext; timeout: number }): Promise<Page> {
+    const { context, timeout } = options
+    const attachActive = process.env.PLAYWRITER_ATTACH_ACTIVE?.toLowerCase() === 'true'
+
+    if (attachActive) {
+      const open = context.pages().filter((p) => !p.isClosed())
+      if (open.length > 0) return open[0]
+    } else if (this.ownedPage && !this.ownedPage.isClosed()) {
+      return this.ownedPage
+    }
+
+    const page = await context.newPage()
+    this.setupPageListeners(page)
+    if (!attachActive) this.ownedPage = page
+    if (page.url() !== 'about:blank') {
+      await page.waitForLoadState('domcontentloaded', { timeout }).catch(() => {})
+    }
+    return page
   }
 
   async reset(): Promise<{ page: Page; context: BrowserContext }> {
@@ -812,7 +845,34 @@ export class PlaywrightExecutor {
     return { page, context }
   }
 
+  /** Milliseconds since this session last ran code (for the idle reaper). */
+  getIdleMs(): number {
+    return Date.now() - this.lastActivityAt
+  }
+
+  /**
+   * Close the tab this session owns (own-tab mode). No-op if the session never
+   * owned a tab (e.g. PLAYWRITER_ATTACH_ACTIVE) so we never close the human's
+   * tab. Safe to call on a closed/absent page.
+   */
+  async closeOwnedTab(): Promise<void> {
+    const owned = this.ownedPage
+    this.ownedPage = null
+    this.page = null
+    if (owned && !owned.isClosed()) {
+      this.suppressPageCloseWarnings = true
+      try {
+        await owned.close()
+      } catch {
+        // already gone
+      } finally {
+        this.suppressPageCloseWarnings = false
+      }
+    }
+  }
+
   async execute(code: string, timeout = 10000): Promise<ExecuteResult> {
+    this.lastActivityAt = Date.now()
     const consoleLogs: Array<{ method: string; args: any[] }> = []
     const warningScope = this.beginWarningScope()
 
@@ -1421,6 +1481,11 @@ export class PlaywrightExecutor {
   // In direct CDP mode, always create a page (no extension check needed).
   private async ensurePageForContext(options: { context: BrowserContext; timeout: number }): Promise<Page> {
     const { context, timeout } = options
+    // Own-tab mode (default): this session gets its own dedicated tab instead
+    // of attaching to whatever tab happens to be first/active.
+    if (process.env.PLAYWRITER_ATTACH_ACTIVE?.toLowerCase() !== 'true') {
+      return this.acquireOwnPage({ context, timeout })
+    }
     const pages = context.pages().filter((p) => !p.isClosed())
     if (pages.length > 0) {
       return pages[0]
@@ -1541,6 +1606,32 @@ export class ExecutorManager {
 
   deleteExecutor(sessionId: string): boolean {
     return this.executors.delete(sessionId)
+  }
+
+  /** Close a session's owned tab and drop the executor. Returns false if unknown. */
+  async closeSession(sessionId: string): Promise<boolean> {
+    const executor = this.executors.get(sessionId)
+    if (!executor) return false
+    await executor.closeOwnedTab().catch(() => {})
+    this.executors.delete(sessionId)
+    return true
+  }
+
+  /**
+   * Close + drop every session idle longer than ttlMs. Only own-tab sessions
+   * close a tab (closeOwnedTab is a no-op otherwise), so the human's tab is
+   * never reaped. Returns the reaped session ids.
+   */
+  async reapIdle(ttlMs: number): Promise<string[]> {
+    const reaped: string[] = []
+    for (const [id, executor] of [...this.executors.entries()]) {
+      if (executor.getIdleMs() > ttlMs) {
+        await executor.closeOwnedTab().catch(() => {})
+        this.executors.delete(id)
+        reaped.push(id)
+      }
+    }
+    return reaped
   }
 
   getSession(sessionId: string): PlaywrightExecutor | null {

@@ -1839,6 +1839,17 @@ export async function startPlayWriterCDPRelayServer({
         cdpConfig: { host: '127.0.0.1', port, token },
         logger: logger || { log: console.error, error: console.error },
       })
+      // Idle reaper: close own-tab sessions (and their tabs) after they go
+      // idle, so finished agents don't leak tabs. Never touches the human's
+      // tab (closeOwnedTab is a no-op for attach-active sessions). Default 15m;
+      // override via PLAYWRITER_SESSION_TTL_MS, disable with 0.
+      const ttlMs = process.env.PLAYWRITER_SESSION_TTL_MS !== undefined ? Number(process.env.PLAYWRITER_SESSION_TTL_MS) : 15 * 60 * 1000
+      if (Number.isFinite(ttlMs) && ttlMs > 0) {
+        const mgr = executorManager
+        setInterval(() => {
+          mgr.reapIdle(ttlMs).catch(() => {})
+        }, 60_000).unref()
+      }
     }
     return executorManager
   }
@@ -1914,7 +1925,7 @@ export async function startPlayWriterCDPRelayServer({
 
   app.post('/cli/execute', async (c) => {
     try {
-      const body = (await c.req.json()) as { sessionId: string | number; code: string; timeout?: number }
+      const body = (await c.req.json()) as { sessionId: string | number; code: string; timeout?: number; cwd?: string }
       const sessionId = normalizeSessionId(body.sessionId)
       const { code, timeout = 10000 } = body
 
@@ -1923,14 +1934,37 @@ export async function startPlayWriterCDPRelayServer({
       }
 
       const manager = await getExecutorManager()
-      const existingExecutor = manager.getSession(sessionId)
-      if (!existingExecutor) {
-        return c.json(
-          { text: `Session ${sessionId} not found. Run 'playwriter session new' first.`, images: [], screenshots: [], isError: true },
-          404,
-        )
+      let executor = manager.getSession(sessionId)
+      if (!executor) {
+        // Lazy auto-create (single-user / high-trust): no `playwriter session
+        // new` needed. ANY id — including a string agent id like
+        // CLAUDE_CODE_SESSION_ID — spins up its own session on first use, and
+        // (via own-tab mode) its own dedicated tab. Wait briefly for the
+        // extension in case it's mid-reconnect (e.g. just after a relay
+        // restart) rather than failing on the first miss.
+        let conn = getExtensionConnection(null, { allowFallback: true })
+        const deadline = Date.now() + 3000
+        while (!conn && Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 150))
+          conn = getExtensionConnection(null, { allowFallback: true })
+        }
+        if (!conn) {
+          return c.json(
+            { text: `No browser connected. Click the Playwriter extension icon, or specify a single connected extension.`, images: [], screenshots: [], isError: true },
+            404,
+          )
+        }
+        executor = manager.getExecutor({
+          sessionId,
+          cwd: typeof body.cwd === 'string' ? body.cwd : undefined,
+          sessionMetadata: {
+            extensionId: conn.stableKey,
+            browser: conn.info.browser || null,
+            profile: conn.info ? { email: conn.info.email || '', id: conn.info.id || '' } : null,
+          },
+        })
       }
-      const result = await existingExecutor.execute(code, timeout)
+      const result = await executor.execute(code, timeout)
 
       return c.json(result)
     } catch (error: any) {
@@ -2075,6 +2109,25 @@ export async function startPlayWriterCDPRelayServer({
       return c.json({ success: true })
     } catch (error: any) {
       logger?.error('Delete session endpoint error:', error)
+      return c.json({ error: error.message }, 500)
+    }
+  })
+
+  // Close a session: shut its owned tab AND drop the executor. Used for
+  // "agent done" cleanup so a finished agent frees its tab immediately rather
+  // than waiting out the idle reaper. Idempotent (unknown id → success:false).
+  app.post('/cli/session/close', async (c) => {
+    try {
+      const body = (await c.req.json()) as { sessionId: string | number }
+      const sessionId = normalizeSessionId(body.sessionId)
+      if (!sessionId) {
+        return c.json({ error: 'sessionId is required' }, 400)
+      }
+      const manager = await getExecutorManager()
+      const closed = await manager.closeSession(sessionId)
+      return c.json({ success: closed })
+    } catch (error: any) {
+      logger?.error('Close session endpoint error:', error)
       return c.json({ error: error.message }, 500)
     }
   })

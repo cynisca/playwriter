@@ -776,6 +776,38 @@ cli
   })
 
 cli
+  .command('session close <sessionId>', "Close a session's owned tab and drop the session")
+  .option('--host <host>', 'Remote relay server host')
+  .option('--token <token>', 'Authentication token (or use PLAYWRITER_TOKEN env var)')
+  .action(async (sessionId, options) => {
+    const serverUrl = await getServerUrl(options.host)
+
+    if (!options.host && !process.env.PLAYWRITER_HOST) {
+      await ensureRelayServer({ logger: console })
+    }
+
+    try {
+      const response = await fetch(`${serverUrl}/cli/session/close`, {
+        method: 'POST',
+        headers: buildAuthHeaders({ token: options.token, json: true }),
+        body: JSON.stringify({ sessionId }),
+      })
+
+      if (!response.ok) {
+        const text = await response.text()
+        console.error(`Error: ${response.status} ${text}`)
+        process.exit(1)
+      }
+
+      const result = (await response.json()) as { success: boolean }
+      console.log(result.success ? `Session ${sessionId} closed.` : `Session ${sessionId} was not open.`)
+    } catch (error: any) {
+      console.error(`Error: ${error.message}`)
+      process.exit(1)
+    }
+  })
+
+cli
   .command('session reset <sessionId>', 'Reset the browser connection for a session')
   .option('--host <host>', 'Remote relay server host')
   .option('--token <token>', 'Authentication token (or use PLAYWRITER_TOKEN env var)')
