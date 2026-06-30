@@ -190,3 +190,35 @@ describe('ExecutorManager — getExecutor cdpConfig override', () => {
     expect(relayed).not.toBe(direct)
   })
 })
+
+describe('ExecutorManager — invalidateForExtension (Chrome-restart self-heal)', () => {
+  const meta = (extensionId: string): SessionMetadata => ({ extensionId, browser: null, profile: null })
+
+  it('invalidates only sessions bound to the given extension stableKey', () => {
+    const mgr = makeManager()
+    mgr.getExecutor({ sessionId: 'a', sessionMetadata: meta('ext-A') })
+    mgr.getExecutor({ sessionId: 'b', sessionMetadata: meta('ext-A') })
+    mgr.getExecutor({ sessionId: 'c', sessionMetadata: meta('ext-B') })
+
+    expect(mgr.invalidateForExtension('ext-A')).toBe(2)
+    expect(mgr.invalidateForExtension('ext-B')).toBe(1)
+    expect(mgr.invalidateForExtension('ext-nope')).toBe(0)
+  })
+
+  it('invalidates ALL sessions when no stableKey is given', () => {
+    const mgr = makeManager()
+    mgr.getExecutor({ sessionId: 'a', sessionMetadata: meta('ext-A') })
+    mgr.getExecutor({ sessionId: 'b', sessionMetadata: meta('ext-B') })
+    expect(mgr.invalidateForExtension()).toBe(2)
+  })
+
+  it('does not drop the executors — only their cached connection state', () => {
+    const mgr = makeManager()
+    const a = mgr.getExecutor({ sessionId: 'a', sessionMetadata: meta('ext-A') })
+    mgr.invalidateForExtension('ext-A')
+    // Same instance is reused (state cleared, not deleted) — so a session keeps
+    // its id/state and just reconnects on next use.
+    expect(mgr.getSession('a')).toBe(a)
+    expect(mgr.listSessions().map((s) => s.id)).toEqual(['a'])
+  })
+})

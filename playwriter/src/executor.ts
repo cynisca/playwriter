@@ -398,6 +398,23 @@ export class PlaywrightExecutor {
     this.browser = null
     this.page = null
     this.context = null
+    // The owned tab belonged to the old connection — never reuse it, or a
+    // reconnect would resolve to a dead/foreign tab.
+    this.ownedPage = null
+  }
+
+  /**
+   * Force a full reconnect on the next call. Used when Chrome restarts under a
+   * persistent relay: Playwright stays connected to the RELAY (not Chrome), so
+   * no 'disconnected' event fires, yet every cached page/context/owned-tab now
+   * points at a dead target — which is why sessions otherwise collapse onto one
+   * tab after a Chrome restart. Dropping the cache makes the next call
+   * reconnect and acquire a fresh owned tab.
+   */
+  invalidate(): void {
+    const old = this.browser
+    this.clearConnectionState()
+    old?.close().catch(() => {}) // relay-side connection; best-effort, don't await
   }
 
   private enqueueWarning(message: string) {
@@ -1606,6 +1623,24 @@ export class ExecutorManager {
 
   deleteExecutor(sessionId: string): boolean {
     return this.executors.delete(sessionId)
+  }
+
+  /**
+   * Invalidate cached connection state for every session bound to `stableKey`
+   * (an extension/profile), or all sessions if omitted. Called when an
+   * extension reconnects (Chrome restarted) so each session re-acquires a fresh
+   * tab on its next call instead of reusing a dead one. Returns how many were
+   * invalidated.
+   */
+  invalidateForExtension(stableKey?: string): number {
+    let n = 0
+    for (const executor of this.executors.values()) {
+      if (!stableKey || executor.getSessionMetadata().extensionId === stableKey) {
+        executor.invalidate()
+        n++
+      }
+    }
+    return n
   }
 
   /** Close a session's owned tab and drop the executor. Returns false if unknown. */

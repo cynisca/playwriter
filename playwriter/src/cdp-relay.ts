@@ -1407,6 +1407,12 @@ export async function startPlayWriterCDPRelayServer({
             if (existingExt.ws) {
               existingExt.ws.close(4001, 'Extension Replaced')
             }
+            // A same-stableKey reconnect means Chrome restarted (or the
+            // extension reloaded) under us. Drop stale per-session browser/page
+            // refs so sessions re-acquire their own fresh tab instead of all
+            // collapsing onto one dead/foreign tab. No-op if no executes yet.
+            const invalidated = executorManager?.invalidateForExtension(stableKey) ?? 0
+            if (invalidated) logger?.log(pc.yellow(`Reconnect: invalidated ${invalidated} session(s) for ${stableKey}`))
           }
 
           // State transition: add extension with ws handle included.
